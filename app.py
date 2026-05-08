@@ -91,10 +91,11 @@ def generar_respuesta(pregunta: str, contextos: list[dict], historial: list[dict
             historial_texto += f"{rol}: {msg['texto']}\n"
 
     prompt = f"""Eres CryptoBot, un asistente experto en criptomonedas, blockchain y activos digitales. \
-Tu conocimiento proviene exclusivamente de la Guía de Criptomonedas proporcionada. \
-Respondes de forma clara, didáctica y accesible, usando términos técnicos cuando sea necesario \
-pero siempre explicándolos. Si la respuesta no está en el contexto, indícalo honestamente \
-y sugiere al usuario que reformule su pregunta.
+Tu conocimiento proviene exclusivamente de "Tu Primera Guía de Criptomonedas". \
+Esta guía está orientada a personas que se inician en el mundo crypto, por lo que respondes de forma \
+clara, didáctica y accesible, sin asumir conocimientos previos, pero usando términos técnicos cuando \
+sea necesario y siempre explicándolos. Si la respuesta no está en el contexto de la guía, indícalo \
+honestamente y sugiere al usuario que reformule su pregunta.
 
 Contexto de la guía:
 {contexto}
@@ -118,7 +119,7 @@ para estructurar mejor la respuesta."""
 # =======================
 
 st.set_page_config(
-    page_title="CryptoBot — Tu guía de criptomonedas",
+    page_title="CryptoBot — Tu Primera Guía de Criptomonedas",
     page_icon="₿",
     layout="centered",
 )
@@ -222,10 +223,10 @@ st.markdown("""
 st.markdown("""
 <div class="crypto-header">
     <h1>₿ CryptoBot</h1>
-    <p>Tu asistente experto en criptomonedas y blockchain</p>
+    <p>Basado en <em>Tu Primera Guía de Criptomonedas</em></p>
     <div class="status-badge">
         <div class="status-dot"></div>
-        Guía de Criptomonedas cargada
+        Tu Primera Guía de Criptomonedas — cargada
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -240,8 +241,8 @@ if "historial" not in st.session_state:
 with st.sidebar:
     st.markdown("### 🤖 Sobre CryptoBot")
     st.markdown("""
-    Soy un agente RAG entrenado con tu **Guía de Criptomonedas**.
-    Puedo responder preguntas sobre:
+    Soy un agente RAG entrenado con **Tu Primera Guía de Criptomonedas**.
+    Ideal para quienes están comenzando. Puedo responder preguntas sobre:
     - 🪙 Bitcoin, Ethereum y altcoins
     - 🔗 Blockchain y tecnología DLT
     - 💼 Wallets y exchanges
@@ -271,9 +272,10 @@ with st.sidebar:
 if not st.session_state.historial:
     with st.chat_message("assistant"):
         st.markdown("""
-        👋 ¡Hola! Soy **CryptoBot**, tu experto en criptomonedas.
+        👋 ¡Hola! Soy **CryptoBot**, tu guía en el mundo de las criptomonedas.
 
-        Estoy listo para responder tus preguntas sobre la guía. Puedes preguntarme sobre:
+        Estoy entrenado con **Tu Primera Guía de Criptomonedas**, perfecta para quienes están \
+dando sus primeros pasos. Puedes preguntarme sobre:
         - *¿Qué es Bitcoin y cómo funciona?*
         - *¿Cómo puedo comprar mis primeras criptomonedas de forma segura?*
         - *¿Qué diferencia hay entre una wallet caliente y una fría?*
@@ -320,7 +322,7 @@ if pregunta:
 
         # Fragmentos recuperados (colapsados)
         if 'similares' in locals() and similares:
-            with st.expander(f"📄 Ver {len(similares)} fragmentos recuperados de la guía"):
+            with st.expander(f"📄 Ver {len(similares)} fragmentos de 'Tu Primera Guía de Criptomonedas'"):
                 for i, c in enumerate(similares, 1):
                     score_color = "#00d4ff" if c['score'] > 0.8 else "#f5c518" if c['score'] > 0.6 else "#8892a4"
                     st.markdown(
