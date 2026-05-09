@@ -1,9 +1,5 @@
-pymongo
-google-genai
-psycopg2-binary
 streamlit
 pymongo
 psycopg2-binary
 google-genai
-PyPDF2
 numpy
