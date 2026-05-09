@@ -3,11 +3,10 @@ import pymongo
 import psycopg2
 from google import genai
 from google.genai import types
-import re
 import json
 
 # =======================
-# 🔐 CONFIG (EDITA AQUÍ)
+# 🔐 CONFIG
 # =======================
 
 GOOGLE_API_KEY = "TU_GOOGLE_API_KEY"
@@ -103,8 +102,6 @@ Eres un asistente de restaurante.
 MENÚ:
 {contexto}
 
-Extrae intención del usuario.
-
 Devuelve JSON:
 {{
 "accion": "agregar" o "ninguno",
@@ -129,14 +126,14 @@ Usuario: {msg}
 
 def responder_natural(msg, pedido):
     prompt = f"""
-Eres un mesero experto, amigable y persuasivo.
+Eres un mesero experto, amigable.
 
 Pedido actual:
 {pedido}
 
 Cliente: {msg}
 
-Responde de forma natural, breve y útil.
+Responde breve y útil.
 """
 
     r = client_genai.models.generate_content(
@@ -151,42 +148,19 @@ Responde de forma natural, breve y útil.
 
 st.set_page_config(page_title="🍹 Verde & Vital", layout="centered")
 
-st.markdown("""
-# 🍹 Verde & Vital
-### Asistente inteligente de bebidas
----
-""")
-
-st.markdown("""
-Bienvenido 👋  
-
-Puedes pedir bebidas escribiendo o usando botones.
-
-Ejemplos:
-- "quiero una IPA"
-- "2 mojitos"
-- "soy mayor"
-- "finalizar"
-""")
+st.title("🍹 Verde & Vital")
+st.write("Pide fácil con botones o usa el chat 🤖")
 
 # =======================
 # MENÚ
 # =======================
 
-st.markdown("## 📋 Menú")
-
 menu = [
-    {"nombre": "IPA Verde", "precio": 17},
-    {"nombre": "Vino Tinto Reserva", "precio": 25},
-    {"nombre": "Whisky 12 años", "precio": 35},
-    {"nombre": "Mojito", "precio": 22},
+    {"nombre": "IPA Verde", "precio": 17, "tipo": "cerveza"},
+    {"nombre": "Vino Tinto Reserva", "precio": 25, "tipo": "vino"},
+    {"nombre": "Whisky 12 años", "precio": 35, "tipo": "whisky"},
+    {"nombre": "Mojito", "precio": 22, "tipo": "cocktail"},
 ]
-
-cols = st.columns(len(menu))
-
-for i, item in enumerate(menu):
-    with cols[i]:
-        st.metric(item["nombre"], f"S/ {item['precio']}")
 
 # =======================
 # ESTADO
@@ -199,7 +173,7 @@ if "chat" not in st.session_state:
     st.session_state.chat = []
 
 # =======================
-# BOTONES
+# ACCIONES PRINCIPALES
 # =======================
 
 col1, col2, col3 = st.columns(3)
@@ -217,7 +191,7 @@ with col2:
     if st.button("🔞 Soy mayor"):
         if st.session_state.pedido:
             st.session_state.pedido["edad_verificada"] = True
-            st.success("Edad verificada ✅")
+            st.success("Edad verificada")
 
 with col3:
     if st.button("✅ Finalizar"):
@@ -227,64 +201,77 @@ with col3:
             st.session_state.pedido = None
 
 # =======================
-# CHAT
+# BOTONES DEL MENÚ
 # =======================
+
+st.subheader("📋 Menú interactivo")
+
+cols = st.columns(len(menu))
+
+for i, item in enumerate(menu):
+    with cols[i]:
+        st.metric(item["nombre"], f"S/ {item['precio']}")
+        if st.button(f"Agregar {item['nombre']}", key=i):
+            if not st.session_state.pedido:
+                st.warning("Inicia un pedido primero")
+            elif not st.session_state.pedido["edad_verificada"]:
+                st.warning("Confirma que eres mayor 🔞")
+            else:
+                st.session_state.pedido["items"].append({
+                    "nombre": item["nombre"],
+                    "tipo": item["tipo"],
+                    "precio": item["precio"],
+                    "cantidad": 1
+                })
+                st.success(f"{item['nombre']} agregado ✅")
+
+# =======================
+# CHAT OPCIONAL
+# =======================
+
+st.subheader("💬 Chat con IA (opcional)")
 
 for m in st.session_state.chat:
     st.chat_message(m["rol"]).write(m["texto"])
 
-msg = st.chat_input("Escribe tu pedido...")
+msg = st.chat_input("Escribe aquí...")
 
 if msg:
     st.chat_message("user").write(msg)
     st.session_state.chat.append({"rol": "user", "texto": msg})
 
     if not st.session_state.pedido:
-        respuesta = "Primero inicia un pedido 🟢"
+        respuesta = "Inicia un pedido primero 🟢"
     else:
         emb = crear_embedding(msg)
         similares = buscar_similares(emb)
         data = interpretar_pedido(msg, similares)
 
         if data["accion"] == "agregar":
-            if not st.session_state.pedido["edad_verificada"]:
-                respuesta = "⚠️ Confirma que eres mayor de edad"
-            else:
-                st.session_state.pedido["items"].append({
-                    "nombre": data["nombre"],
-                    "tipo": data["tipo"],
-                    "precio": data["precio"],
-                    "cantidad": data["cantidad"]
-                })
-                respuesta = responder_natural(msg, st.session_state.pedido)
-        else:
-            respuesta = responder_natural(msg, st.session_state.pedido)
+            st.session_state.pedido["items"].append(data)
+
+        respuesta = responder_natural(msg, st.session_state.pedido)
 
     st.chat_message("assistant").write(respuesta)
     st.session_state.chat.append({"rol": "assistant", "texto": respuesta})
 
 # =======================
-# PEDIDO VISUAL
+# PEDIDO
 # =======================
 
 if st.session_state.pedido:
-    st.markdown("## 🧾 Tu pedido")
+    st.subheader("🧾 Tu pedido")
 
     total = 0
     for item in st.session_state.pedido["items"]:
         subtotal = item["precio"] * item["cantidad"]
         total += subtotal
 
-        st.markdown(f"""
-**{item['nombre']}**  
-Cantidad: {item['cantidad']}  
-Subtotal: S/{subtotal:.2f}
----
-""")
+        st.write(f"{item['nombre']} x{item['cantidad']} → S/{subtotal}")
 
     servicio = total * 0.10
     total_final = total + servicio
 
-    st.markdown(f"💰 Subtotal: S/{total:.2f}")
-    st.markdown(f"🧾 Servicio (10%): S/{servicio:.2f}")
-    st.markdown(f"## Total: S/{total_final:.2f}")
+    st.write(f"Subtotal: S/{total}")
+    st.write(f"Servicio: S/{servicio}")
+    st.write(f"Total: S/{total_final}")
