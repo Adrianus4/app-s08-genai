@@ -17,7 +17,7 @@ db = client_mongo.pdf_embeddings_dbADR
 collection = db.pdf_vectors
 
 # =======================
-# EMBEDDINGS
+# EMBEDDING
 # =======================
 
 def crear_embedding(texto, tipo="RETRIEVAL_QUERY"):
@@ -25,24 +25,21 @@ def crear_embedding(texto, tipo="RETRIEVAL_QUERY"):
         response = client_genai.models.embed_content(
             model="gemini-embedding-001",
             contents=texto,
-            config=types.EmbedContentConfig(
-                task_type=tipo
-            ),
+            config=types.EmbedContentConfig(task_type=tipo),
         )
         return response.embeddings[0].values
-    except Exception as e:
-        print("Error embedding:", e)
+    except:
         return None
 
 # =======================
-# BUSQUEDA VECTORIAL
+# BUSCAR CONTEXTO (RAG)
 # =======================
 
-def buscar_en_mongo(pregunta):
+def buscar_contexto(pregunta):
     emb = crear_embedding(pregunta)
 
     if emb is None:
-        return []
+        return ""
 
     try:
         resultados = collection.aggregate([
@@ -52,89 +49,167 @@ def buscar_en_mongo(pregunta):
                     "path": "embedding",
                     "queryVector": emb,
                     "numCandidates": 50,
-                    "limit": 5
+                    "limit": 3
                 }
             }
         ])
 
-        return [r["texto"] for r in resultados]
+        textos = [r["texto"] for r in resultados]
+        return "\n".join(textos)
 
-    except Exception as e:
-        print("Error Mongo:", e)
-        return []
+    except:
+        return ""
 
 # =======================
-# 🧠 AGENTE (CEREBRO)
+# AGENTE IA
 # =======================
 
-def agente_responder(pregunta):
-    # 1. Buscar contexto en Mongo
-    contextos = buscar_en_mongo(pregunta)
+def agente(msg):
+    contexto = buscar_contexto(msg)
 
-    contexto = "\n".join(contextos)
-
-    # 2. Construir prompt inteligente
     prompt = f"""
-Eres un sommelier experto en bebidas de restaurante.
+Eres un sommelier experto.
 
-Tu trabajo:
-- Responder preguntas del usuario
+Funciones:
 - Recomendar bebidas
-- Usar SOLO la información del contexto
+- Responder dudas
+- Sugerir opciones
 
-Si no encuentras la respuesta en el contexto:
-di claramente "No tengo esa información en el menú"
+Usa SOLO el contexto.
 
-====================
 CONTEXTO:
 {contexto}
-====================
 
 USUARIO:
-{pregunta}
+{msg}
 """
 
     try:
-        response = client_genai.models.generate_content(
+        r = client_genai.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt
         )
-
-        return response.text
-
-    except Exception as e:
-        return f"Error IA: {e}"
+        return r.text
+    except:
+        return "Error en IA"
 
 # =======================
 # UI
 # =======================
 
 st.set_page_config(layout="wide")
-st.title("🍷 Verde & Vital - Sommelier IA")
+st.title("🍷 Verde & Vital")
+
+# 🎨 estilo minimalista
+st.markdown("""
+<style>
+.card {
+    background:#111827;
+    padding:20px;
+    border-radius:15px;
+    color:white;
+    text-align:center;
+}
+.sidebar {
+    background:#0f172a;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# =======================
+# MENÚ BASE
+# =======================
+
+menu = [
+    {"nombre": "IPA Verde", "precio": 17},
+    {"nombre": "Vino Tinto", "precio": 25},
+    {"nombre": "Whisky 12 años", "precio": 35},
+    {"nombre": "Mojito", "precio": 22},
+]
 
 # =======================
 # ESTADO
 # =======================
 
+if "pedido" not in st.session_state:
+    st.session_state.pedido = []
+
 if "chat" not in st.session_state:
     st.session_state.chat = []
 
 # =======================
-# CHAT UI
+# SIDEBAR PEDIDOS
 # =======================
 
-st.subheader("💬 Chat inteligente (con PDF + MongoDB)")
+st.sidebar.title("🧾 Tus pedidos")
+
+total = 0
+for p in st.session_state.pedido:
+    total += p["precio"]
+    st.sidebar.write(f"{p['nombre']} - S/{p['precio']}")
+
+st.sidebar.write("---")
+st.sidebar.write(f"**Total: S/{total}**")
+
+if st.sidebar.button("🧹 Limpiar pedido"):
+    st.session_state.pedido = []
+
+# =======================
+# MENÚ VISUAL
+# =======================
+
+st.subheader("Menú")
+
+cols = st.columns(len(menu))
+
+for i, item in enumerate(menu):
+    with cols[i]:
+        st.markdown(f"""
+        <div class="card">
+        <h3>{item['nombre']}</h3>
+        <p>S/ {item['precio']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Agregar", key=i):
+            st.session_state.pedido.append(item)
+            st.success("Agregado")
+
+# =======================
+# DASHBOARD SIMPLE
+# =======================
+
+st.divider()
+st.subheader("📊 Resumen de pedido")
+
+if st.session_state.pedido:
+    nombres = [p["nombre"] for p in st.session_state.pedido]
+
+    conteo = {}
+    for n in nombres:
+        conteo[n] = conteo.get(n, 0) + 1
+
+    st.bar_chart(conteo)
+else:
+    st.info("Sin pedidos aún")
+
+# =======================
+# CHAT IA
+# =======================
+
+st.divider()
+st.subheader("💬 Sommelier IA")
 
 for m in st.session_state.chat:
     st.chat_message(m["rol"]).write(m["texto"])
 
-msg = st.chat_input("Ej: ¿qué vinos recomiendas?")
+msg = st.chat_input("Pregunta sobre bebidas...")
 
 if msg:
     st.chat_message("user").write(msg)
     st.session_state.chat.append({"rol": "user", "texto": msg})
 
-    respuesta = agente_responder(msg)
+    respuesta = agente(msg)
 
     st.chat_message("assistant").write(respuesta)
     st.session_state.chat.append({"rol": "assistant", "texto": respuesta})
