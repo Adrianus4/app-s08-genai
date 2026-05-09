@@ -5,18 +5,17 @@ from google import genai
 from google.genai import types
 
 # =======================
-# CONFIG
+# 🔐 CONFIG (TODO AQUÍ)
 # =======================
 
-GOOGLE_API_KEY = "TU_API_KEY"
-
-MONGODB_URI = "TU_MONGO_URI"
+GOOGLE_API_KEY = "AIzaSyAW2Tr51sSd39GO-iRAJAEyr_rdXJKFoKU"
+MONGODB_URI = "mongodb+srv://benjaminjimenez0924_db_user:ADR123adr123@s05lab2.3pi8vwq.mongodb.net/"
 
 SUPABASE_CONFIG = {
     "host": "db.lbytbevfclnpefshnxrw.supabase.co",
     "dbname": "postgres",
     "user": "postgres",
-    "password": "TU_PASSWORD",
+    "password": "TU_PASSWORD_AQUI",
     "port": 5432,
     "sslmode": "require"
 }
@@ -39,34 +38,40 @@ def get_conn():
     try:
         return psycopg2.connect(**SUPABASE_CONFIG)
     except Exception as e:
-        print(e)
+        st.error(f"❌ Error Supabase: {e}")
         return None
 
 def guardar_pedido_db(items):
     conn = get_conn()
     if not conn:
-        st.error("Error conectando a Supabase")
         return
 
     cur = conn.cursor()
 
-    for item in items:
-        cur.execute("""
-        INSERT INTO restaurant.alcohol_orders
-        (customer_name, drink_name, drink_type, quantity, unit_price, is_verified_age)
-        VALUES (%s,%s,%s,%s,%s,%s)
-        """, (
-            "Cliente Web",
-            item["nombre"],
-            item.get("tipo", "general"),
-            1,
-            item["precio"],
-            True
-        ))
+    try:
+        for item in items:
+            cur.execute("""
+            INSERT INTO restaurant.alcohol_orders
+            (customer_name, drink_name, drink_type, quantity, unit_price, is_verified_age)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            """, (
+                "Cliente Web",
+                item["nombre"],
+                item.get("tipo", "general"),
+                1,
+                item["precio"],
+                True
+            ))
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        conn.commit()
+        st.success("✅ Pedido guardado")
+
+    except Exception as e:
+        st.error(f"❌ Error guardando pedido: {e}")
+
+    finally:
+        cur.close()
+        conn.close()
 
 def obtener_pedidos():
     conn = get_conn()
@@ -74,17 +79,21 @@ def obtener_pedidos():
         return []
 
     cur = conn.cursor()
-    cur.execute("""
-    SELECT drink_name, quantity, total_price, created_at
-    FROM restaurant.alcohol_orders
-    ORDER BY created_at DESC
-    LIMIT 20
-    """)
 
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    try:
+        cur.execute("""
+        SELECT drink_name, quantity, total_price, created_at
+        FROM restaurant.alcohol_orders
+        ORDER BY created_at DESC
+        LIMIT 20
+        """)
+        return cur.fetchall()
+    except Exception as e:
+        st.error(f"❌ Error consultando pedidos: {e}")
+        return []
+    finally:
+        cur.close()
+        conn.close()
 
 # =======================
 # EMBEDDINGS
@@ -95,16 +104,15 @@ def crear_embedding(texto):
         response = client_genai.models.embed_content(
             model="gemini-embedding-001",
             contents=texto,
-            config=types.EmbedContentConfig(
-                task_type="RETRIEVAL_QUERY"
-            ),
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
         )
         return response.embeddings[0].values
-    except:
+    except Exception as e:
+        st.warning(f"⚠️ Error embedding: {e}")
         return None
 
 # =======================
-# RAG MONGO
+# RAG
 # =======================
 
 def buscar_contexto(pregunta):
@@ -126,64 +134,72 @@ def buscar_contexto(pregunta):
             }
         ])
 
-        textos = [r["texto"] for r in resultados]
+        textos = [r.get("texto", "") for r in resultados]
         return "\n".join(textos)
 
-    except:
+    except Exception as e:
+        st.warning(f"⚠️ Error Mongo: {e}")
         return ""
 
 # =======================
-# AGENTE IA
+# 🤖 AGENTE IA (ARREGLADO)
 # =======================
 
 def agente(msg):
     contexto = buscar_contexto(msg)
 
     prompt = f"""
-Eres un sommelier experto.
+Eres un sommelier experto en bebidas alcohólicas.
 
-Funciones:
-- Recomendar bebidas
-- Responder dudas
-- Ser claro y breve
+Responde claro, profesional y útil.
 
-Usa SOLO el contexto.
+Si no hay contexto suficiente, responde con conocimiento general.
 
 CONTEXTO:
 {contexto}
 
-USUARIO:
+PREGUNTA:
 {msg}
 """
 
     try:
-        r = client_genai.models.generate_content(
-            model="gemini-2.5-flash",
+        response = client_genai.models.generate_content(
+            model="gemini-1.5-flash",
             contents=prompt
         )
-        return r.text
-    except:
-        return "Error IA"
+
+        return response.text if hasattr(response, "text") else "Sin respuesta"
+
+    except Exception as e:
+        return f"❌ Error IA: {e}"
 
 # =======================
-# UI
+# 🎨 UI ELEGANTE
 # =======================
 
 st.set_page_config(layout="wide")
-st.title("🍷 Verde & Vital")
 
-# 🎨 estilo
 st.markdown("""
 <style>
+body {
+    background-color: #0f172a;
+}
 .card {
-    background:#111827;
+    background:#1e293b;
     padding:20px;
-    border-radius:15px;
+    border-radius:20px;
     color:white;
     text-align:center;
+    transition:0.3s;
+}
+.card:hover {
+    transform: scale(1.05);
+    background:#334155;
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.title("🍷 Verde & Vital")
 
 # =======================
 # MENÚ
@@ -212,16 +228,15 @@ if "chat" not in st.session_state:
 
 st.sidebar.title("🧾 Tu pedido")
 
-total = 0
+total = sum(p["precio"] for p in st.session_state.pedido)
+
 for p in st.session_state.pedido:
-    total += p["precio"]
     st.sidebar.write(f"{p['nombre']} - S/{p['precio']}")
 
 st.sidebar.write(f"**Total: S/{total}**")
 
-if st.sidebar.button("✅ Guardar pedido"):
+if st.sidebar.button("Guardar pedido"):
     guardar_pedido_db(st.session_state.pedido)
-    st.sidebar.success("Pedido guardado en Supabase 🎉")
     st.session_state.pedido = []
 
 # =======================
@@ -245,25 +260,27 @@ for i, item in enumerate(menu):
             st.session_state.pedido.append(item)
 
 # =======================
-# HISTORIAL (DB REAL)
+# HISTORIAL ELEGANTE
 # =======================
 
 st.divider()
-st.subheader("📊 Pedidos recientes")
+st.subheader("📊 Historial de pedidos")
 
 pedidos = obtener_pedidos()
 
 if pedidos:
-    nombres = [p[0] for p in pedidos]
-
     conteo = {}
-    for n in nombres:
-        conteo[n] = conteo.get(n, 0) + 1
+    for p in pedidos:
+        conteo[p[0]] = conteo.get(p[0], 0) + 1
 
     st.bar_chart(conteo)
 
     for p in pedidos:
-        st.write(f"{p[0]} | Cantidad: {p[1]} | S/{p[2]}")
+        st.markdown(f"""
+        <div class="card">
+        🍸 {p[0]} | Cantidad: {p[1]} | Total: S/{p[2]}
+        </div>
+        """, unsafe_allow_html=True)
 else:
     st.info("Sin pedidos aún")
 
@@ -277,7 +294,7 @@ st.subheader("💬 Sommelier IA")
 for m in st.session_state.chat:
     st.chat_message(m["rol"]).write(m["texto"])
 
-msg = st.chat_input("Ej: ¿qué vino recomiendas?")
+msg = st.chat_input("Ej: ¿Qué vino recomiendas con carne?")
 
 if msg:
     st.chat_message("user").write(msg)
