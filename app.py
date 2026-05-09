@@ -6,7 +6,7 @@ from google.genai import types
 import json
 
 # =======================
-# 🔐 CONFIG
+# CONFIG
 # =======================
 
 GOOGLE_API_KEY = "TU_GOOGLE_API_KEY"
@@ -31,8 +31,11 @@ def get_genai_client():
 
 @st.cache_resource
 def get_mongo():
-    client = pymongo.MongoClient(MONGODB_URI)
-    return client["pdf_embeddings_dbADR"]["pdf_vectors"]
+    try:
+        client = pymongo.MongoClient(MONGODB_URI)
+        return client["pdf_embeddings_dbADR"]["pdf_vectors"]
+    except:
+        return None
 
 client_genai = get_genai_client()
 collection = get_mongo()
@@ -43,17 +46,15 @@ collection = get_mongo()
 
 def get_conn():
     try:
-        conn = psycopg2.connect(**SUPABASE_CONFIG)
-        return conn
+        return psycopg2.connect(**SUPABASE_CONFIG)
     except Exception as e:
-        st.error("❌ Error conectando a Supabase")
+        st.error("❌ Error DB")
         st.text(str(e))
         return None
 
 def guardar_pedido(pedido):
     conn = get_conn()
-
-    if conn is None:
+    if not conn:
         return
 
     cur = conn.cursor()
@@ -76,10 +77,10 @@ def guardar_pedido(pedido):
             ))
 
         conn.commit()
-        st.success("✅ Pedido guardado en Supabase")
+        st.success("🎉 Pedido guardado correctamente")
 
     except Exception as e:
-        st.error("❌ Error al guardar pedido")
+        st.error("❌ Error guardando")
         st.text(str(e))
 
     finally:
@@ -87,44 +88,43 @@ def guardar_pedido(pedido):
         conn.close()
 
 # =======================
-# IA
+# IA SEGURA
 # =======================
 
 def crear_embedding(texto):
-    response = client_genai.models.embed_content(
-        model="gemini-embedding-001",
-        contents=texto,
-        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
-    )
-    return response.embeddings[0].values
-
-def buscar_similares(embedding):
     try:
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": "vector_index",
-                    "path": "embedding",
-                    "queryVector": embedding,
-                    "numCandidates": 50,
-                    "limit": 3,
-                }
-            }
-        ]
-        return list(collection.aggregate(pipeline))
+        response = client_genai.models.embed_content(
+            model="gemini-embedding-001",
+            contents=texto,
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
+        )
+        return response.embeddings[0].values
     except:
-        return []
+        return None
+
+def detectar_menu_local(msg, menu):
+    msg = msg.lower()
+    for item in menu:
+        if item["nombre"].lower() in msg:
+            return {
+                "accion": "agregar",
+                "nombre": item["nombre"],
+                "tipo": item["tipo"],
+                "precio": item["precio"],
+                "cantidad": 1
+            }
+    return {"accion": "ninguno"}
 
 def interpretar_pedido(msg, contextos):
-    contexto = "\n".join([c.get("texto", "") for c in contextos])
+    try:
+        contexto = "\n".join([c.get("texto", "") for c in contextos])
 
-    prompt = f"""
-Eres un asistente de restaurante.
+        prompt = f"""
+Extrae pedido en JSON:
 
-MENÚ:
-{contexto}
+Usuario: {msg}
 
-Devuelve JSON:
+Formato:
 {{
 "accion": "agregar" o "ninguno",
 "nombre": "",
@@ -132,47 +132,47 @@ Devuelve JSON:
 "precio": 0,
 "cantidad": 1
 }}
-
-Usuario: {msg}
 """
-
-    try:
         r = client_genai.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt
         )
+
         return json.loads(r.text)
+
     except:
         return {"accion": "ninguno"}
 
-def responder_natural(msg, pedido):
+def responder_natural(msg):
     try:
-        prompt = f"""
-Eres un mesero experto y amigable.
-
-Pedido actual:
-{pedido}
-
-Cliente: {msg}
-
-Responde breve.
-"""
         r = client_genai.models.generate_content(
             model="gemini-2.5-flash",
-            contents=prompt
+            contents=f"Responde como mesero amigable: {msg}"
         )
         return r.text
     except:
-        return "🤖 Estoy aquí para ayudarte con tu pedido."
+        return "🤖 ¿Deseas ver el menú o agregar una bebida?"
 
 # =======================
 # UI
 # =======================
 
-st.set_page_config(page_title="🍹 Verde & Vital", layout="centered")
+st.set_page_config(page_title="🍹 Verde & Vital", layout="wide")
+
+st.markdown("""
+<style>
+.card {
+    padding:15px;
+    border-radius:15px;
+    background:#1e1e1e;
+    color:white;
+    text-align:center;
+}
+</style>
+""", unsafe_allow_html=True)
 
 st.title("🍹 Verde & Vital")
-st.write("Pide con botones o usa el chat 🤖")
+st.caption("Tu bar inteligente 🍸")
 
 # =======================
 # MENÚ
@@ -196,13 +196,13 @@ if "chat" not in st.session_state:
     st.session_state.chat = []
 
 # =======================
-# BOTONES PRINCIPALES
+# CONTROLES
 # =======================
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("🟢 Iniciar"):
+    if st.button("🟢 Iniciar pedido"):
         st.session_state.pedido = {
             "cliente": "Cliente Demo",
             "items": [],
@@ -222,15 +222,8 @@ with col3:
             guardar_pedido(st.session_state.pedido)
             st.session_state.pedido = None
 
-with col4:
-    if st.button("🔌 Test DB"):
-        conn = get_conn()
-        if conn:
-            st.success("Conexión OK")
-            conn.close()
-
 # =======================
-# MENÚ INTERACTIVO
+# MENÚ VISUAL
 # =======================
 
 st.subheader("📋 Menú")
@@ -239,12 +232,18 @@ cols = st.columns(len(menu))
 
 for i, item in enumerate(menu):
     with cols[i]:
-        st.metric(item["nombre"], f"S/ {item['precio']}")
-        if st.button(f"Agregar", key=f"btn_{i}"):
+        st.markdown(f"""
+        <div class="card">
+        <h3>{item['nombre']}</h3>
+        <p>S/ {item['precio']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Agregar", key=i):
             if not st.session_state.pedido:
-                st.warning("Inicia pedido primero")
+                st.warning("Inicia pedido")
             elif not st.session_state.pedido["edad_verificada"]:
-                st.warning("Confirma edad 🔞")
+                st.warning("Confirma edad")
             else:
                 st.session_state.pedido["items"].append({
                     "nombre": item["nombre"],
@@ -252,18 +251,18 @@ for i, item in enumerate(menu):
                     "precio": item["precio"],
                     "cantidad": 1
                 })
-                st.success(f"{item['nombre']} agregado")
+                st.success("Agregado")
 
 # =======================
 # CHAT
 # =======================
 
-st.subheader("💬 Chat IA")
+st.subheader("💬 Chat")
 
 for m in st.session_state.chat:
     st.chat_message(m["rol"]).write(m["texto"])
 
-msg = st.chat_input("Escribe tu pedido...")
+msg = st.chat_input("Ej: 2 mojitos")
 
 if msg:
     st.chat_message("user").write(msg)
@@ -273,33 +272,46 @@ if msg:
         respuesta = "Inicia pedido primero 🟢"
     else:
         emb = crear_embedding(msg)
-        similares = buscar_similares(emb)
-        data = interpretar_pedido(msg, similares)
 
-        if data.get("accion") == "agregar" and st.session_state.pedido["edad_verificada"]:
+        if emb and collection:
+            similares = buscar_similares(emb)
+            data = interpretar_pedido(msg, similares)
+        else:
+            data = detectar_menu_local(msg, menu)
+
+        if data["accion"] == "agregar" and st.session_state.pedido["edad_verificada"]:
             st.session_state.pedido["items"].append(data)
 
-        respuesta = responder_natural(msg, st.session_state.pedido)
+        respuesta = responder_natural(msg)
 
     st.chat_message("assistant").write(respuesta)
     st.session_state.chat.append({"rol": "assistant", "texto": respuesta})
 
 # =======================
-# PEDIDO
+# PEDIDO BONITO
 # =======================
 
 if st.session_state.pedido:
-    st.subheader("🧾 Pedido")
+    st.subheader("🧾 Tu pedido")
 
     total = 0
+
     for item in st.session_state.pedido["items"]:
         subtotal = item["precio"] * item["cantidad"]
         total += subtotal
-        st.write(f"{item['nombre']} x{item['cantidad']} → S/{subtotal}")
+
+        st.markdown(f"""
+        🥤 **{item['nombre']}**  
+        Cantidad: {item['cantidad']}  
+        Subtotal: S/ {subtotal}
+        ---
+        """)
 
     servicio = total * 0.10
     total_final = total + servicio
 
-    st.write(f"Subtotal: S/{total}")
-    st.write(f"Servicio: S/{servicio}")
-    st.write(f"Total: S/{total_final}")
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Subtotal", f"S/ {total}")
+    col2.metric("Servicio", f"S/ {servicio:.2f}")
+    col3.metric("Total", f"S/ {total_final:.2f}")
