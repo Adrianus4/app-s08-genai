@@ -1,115 +1,48 @@
 import streamlit as st
+import pymongo
 import psycopg2
-from pymongo import MongoClient
 from google import genai
+from google.genai import types
 import re
+import json
 
-# ==============================
-# CONFIG
-# ==============================
+# =======================
+# 🔐 CONFIG (EDITA AQUÍ)
+# =======================
 
-st.set_page_config(page_title="🍹 Verde & Vital", layout="centered")
-
-st.markdown("""
-# 🍹 Verde & Vital
-### Asistente inteligente de bebidas
----
-""")
-
-# ==============================
-# SECRETS
-# ==============================
+GOOGLE_API_KEY = "TU_GOOGLE_API_KEY"
+MONGODB_URI = "TU_MONGODB_URI"
 
 SUPABASE_CONFIG = {
-    "host": st.secrets["SUPABASE_HOST"],
-    "database": st.secrets["SUPABASE_DB"],
-    "user": st.secrets["SUPABASE_USER"],
-    "password": st.secrets["SUPABASE_PASSWORD"],
-    "port": st.secrets["SUPABASE_PORT"]
+    "host": "db.lbytbevfclnpefshnxrw.supabase.co",
+    "dbname": "postgres",
+    "user": "postgres",
+    "password": "TU_PASSWORD_SUPABASE",
+    "port": 5432
 }
 
-MONGO_URI = st.secrets["MONGODB_URI"]
-GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+# =======================
+# CLIENTES
+# =======================
 
-# ==============================
-# CONEXIONES
-# ==============================
+@st.cache_resource
+def get_genai_client():
+    return genai.Client(api_key=GOOGLE_API_KEY)
 
-# Supabase (Postgres)
+@st.cache_resource
+def get_mongo():
+    client = pymongo.MongoClient(MONGODB_URI)
+    return client["pdf_embeddings_dbADR"]["pdf_vectors"]
+
+client_genai = get_genai_client()
+collection = get_mongo()
+
+# =======================
+# DB
+# =======================
+
 def get_conn():
     return psycopg2.connect(**SUPABASE_CONFIG)
-
-# MongoDB
-mongo_client = MongoClient(MONGO_URI)
-mongo_db = mongo_client["rag_restaurante"]
-collection = mongo_db["bebidas"]
-
-# Gemini
-client_genai = genai.Client(api_key=GOOGLE_API_KEY)
-
-# ==============================
-# ESTADO
-# ==============================
-
-if "pedido" not in st.session_state:
-    st.session_state.pedido = None
-
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-
-# ==============================
-# FUNCIONES
-# ==============================
-
-def detectar_bebida(mensaje):
-    """Detecta bebida básica desde texto"""
-    mensaje = mensaje.lower()
-
-    catalogo = [
-        {"nombre": "IPA Verde", "tipo": "cerveza", "precio": 17},
-        {"nombre": "Vino Tinto Reserva", "tipo": "vino", "precio": 25},
-        {"nombre": "Whisky 12 años", "tipo": "whisky", "precio": 35},
-        {"nombre": "Mojito", "tipo": "coctel", "precio": 22}
-    ]
-
-    for bebida in catalogo:
-        if bebida["nombre"].lower() in mensaje:
-            cantidad = 1
-            match = re.search(r"\d+", mensaje)
-            if match:
-                cantidad = int(match.group())
-
-            return {
-                "nombre": bebida["nombre"],
-                "tipo": bebida["tipo"],
-                "precio": bebida["precio"],
-                "cantidad": cantidad
-            }
-
-    return None
-
-
-def generar_respuesta_natural(user_msg, estado_pedido):
-    prompt = f"""
-Eres un asistente de restaurante amigable.
-
-Estado del pedido:
-{estado_pedido}
-
-Usuario: {user_msg}
-
-Responde de forma natural, breve y útil.
-"""
-
-    try:
-        response = client_genai.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
-        return response.text
-    except:
-        return "Estoy teniendo problemas para responder ahora 😅"
-
 
 def guardar_pedido(pedido):
     conn = get_conn()
@@ -135,9 +68,139 @@ def guardar_pedido(pedido):
     cur.close()
     conn.close()
 
-# ==============================
-# BOTONES UX
-# ==============================
+# =======================
+# IA
+# =======================
+
+def crear_embedding(texto):
+    response = client_genai.models.embed_content(
+        model="gemini-embedding-001",
+        contents=texto,
+        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
+    )
+    return response.embeddings[0].values
+
+def buscar_similares(embedding):
+    pipeline = [
+        {
+            "$vectorSearch": {
+                "index": "vector_index",
+                "path": "embedding",
+                "queryVector": embedding,
+                "numCandidates": 50,
+                "limit": 3,
+            }
+        }
+    ]
+    return list(collection.aggregate(pipeline))
+
+def interpretar_pedido(msg, contextos):
+    contexto = "\n".join([c["texto"] for c in contextos])
+
+    prompt = f"""
+Eres un asistente de restaurante.
+
+MENÚ:
+{contexto}
+
+Extrae intención del usuario.
+
+Devuelve JSON:
+{{
+"accion": "agregar" o "ninguno",
+"nombre": "",
+"tipo": "",
+"precio": 0,
+"cantidad": 1
+}}
+
+Usuario: {msg}
+"""
+
+    r = client_genai.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+
+    try:
+        return json.loads(r.text)
+    except:
+        return {"accion": "ninguno"}
+
+def responder_natural(msg, pedido):
+    prompt = f"""
+Eres un mesero experto, amigable y persuasivo.
+
+Pedido actual:
+{pedido}
+
+Cliente: {msg}
+
+Responde de forma natural, breve y útil.
+"""
+
+    r = client_genai.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    return r.text
+
+# =======================
+# UI
+# =======================
+
+st.set_page_config(page_title="🍹 Verde & Vital", layout="centered")
+
+st.markdown("""
+# 🍹 Verde & Vital
+### Asistente inteligente de bebidas
+---
+""")
+
+st.markdown("""
+Bienvenido 👋  
+
+Puedes pedir bebidas escribiendo o usando botones.
+
+Ejemplos:
+- "quiero una IPA"
+- "2 mojitos"
+- "soy mayor"
+- "finalizar"
+""")
+
+# =======================
+# MENÚ
+# =======================
+
+st.markdown("## 📋 Menú")
+
+menu = [
+    {"nombre": "IPA Verde", "precio": 17},
+    {"nombre": "Vino Tinto Reserva", "precio": 25},
+    {"nombre": "Whisky 12 años", "precio": 35},
+    {"nombre": "Mojito", "precio": 22},
+]
+
+cols = st.columns(len(menu))
+
+for i, item in enumerate(menu):
+    with cols[i]:
+        st.metric(item["nombre"], f"S/ {item['precio']}")
+
+# =======================
+# ESTADO
+# =======================
+
+if "pedido" not in st.session_state:
+    st.session_state.pedido = None
+
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+
+# =======================
+# BOTONES
+# =======================
 
 col1, col2, col3 = st.columns(3)
 
@@ -151,53 +214,58 @@ with col1:
         }
 
 with col2:
-    if st.button("🔞 Soy mayor de edad"):
+    if st.button("🔞 Soy mayor"):
         if st.session_state.pedido:
             st.session_state.pedido["edad_verificada"] = True
             st.success("Edad verificada ✅")
 
 with col3:
-    if st.button("✅ Finalizar pedido"):
+    if st.button("✅ Finalizar"):
         if st.session_state.pedido:
             guardar_pedido(st.session_state.pedido)
             st.success("Pedido guardado 🎉")
             st.session_state.pedido = None
 
-# ==============================
+# =======================
 # CHAT
-# ==============================
+# =======================
 
-for msg in st.session_state.chat:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+for m in st.session_state.chat:
+    st.chat_message(m["rol"]).write(m["texto"])
 
-user_input = st.chat_input("Escribe tu pedido...")
+msg = st.chat_input("Escribe tu pedido...")
 
-if user_input:
-    st.session_state.chat.append({"role": "user", "content": user_input})
+if msg:
+    st.chat_message("user").write(msg)
+    st.session_state.chat.append({"rol": "user", "texto": msg})
 
     if not st.session_state.pedido:
-        respuesta = "Primero inicia un pedido con el botón 🟢"
+        respuesta = "Primero inicia un pedido 🟢"
     else:
-        data = detectar_bebida(user_input)
+        emb = crear_embedding(msg)
+        similares = buscar_similares(emb)
+        data = interpretar_pedido(msg, similares)
 
-        if data:
+        if data["accion"] == "agregar":
             if not st.session_state.pedido["edad_verificada"]:
-                respuesta = "⚠️ Debes confirmar que eres mayor de edad"
+                respuesta = "⚠️ Confirma que eres mayor de edad"
             else:
-                st.session_state.pedido["items"].append(data)
-                respuesta = generar_respuesta_natural(user_input, st.session_state.pedido)
+                st.session_state.pedido["items"].append({
+                    "nombre": data["nombre"],
+                    "tipo": data["tipo"],
+                    "precio": data["precio"],
+                    "cantidad": data["cantidad"]
+                })
+                respuesta = responder_natural(msg, st.session_state.pedido)
         else:
-            respuesta = generar_respuesta_natural(user_input, st.session_state.pedido)
+            respuesta = responder_natural(msg, st.session_state.pedido)
 
-    st.session_state.chat.append({"role": "assistant", "content": respuesta})
+    st.chat_message("assistant").write(respuesta)
+    st.session_state.chat.append({"rol": "assistant", "texto": respuesta})
 
-    with st.chat_message("assistant"):
-        st.markdown(respuesta)
-
-# ==============================
-# MOSTRAR PEDIDO
-# ==============================
+# =======================
+# PEDIDO VISUAL
+# =======================
 
 if st.session_state.pedido:
     st.markdown("## 🧾 Tu pedido")
