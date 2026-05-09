@@ -1,56 +1,125 @@
 import streamlit as st
-import pymongo
 import psycopg2
+from pymongo import MongoClient
 from google import genai
-from google.genai import types
+import re
 
-# =======================
-# 🔐 CONFIG (TODO AQUÍ)
-# =======================
+# ==============================
+# CONFIG
+# ==============================
 
-GOOGLE_API_KEY = "TU_GOOGLE_API_KEY"
-MONGODB_URI = "TU_MONGODB_URI"
+st.set_page_config(page_title="🍹 Verde & Vital", layout="centered")
+
+st.markdown("""
+# 🍹 Verde & Vital
+### Asistente inteligente de bebidas
+---
+""")
+
+# ==============================
+# SECRETS
+# ==============================
 
 SUPABASE_CONFIG = {
-    "host": "db.lbytbevfclnpefshnxrw.supabase.co",
-    "dbname": "postgres",
-    "user": "postgres",
-    "password": "TU_PASSWORD_SUPABASE",
-    "port": 5432
+    "host": st.secrets["SUPABASE_HOST"],
+    "database": st.secrets["SUPABASE_DB"],
+    "user": st.secrets["SUPABASE_USER"],
+    "password": st.secrets["SUPABASE_PASSWORD"],
+    "port": st.secrets["SUPABASE_PORT"]
 }
 
-# =======================
-# CLIENTES
-# =======================
+MONGO_URI = st.secrets["MONGODB_URI"]
+GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 
-@st.cache_resource
-def get_genai_client():
-    return genai.Client(api_key=GOOGLE_API_KEY)
+# ==============================
+# CONEXIONES
+# ==============================
 
-@st.cache_resource
-def get_mongo_collection():
-    client = pymongo.MongoClient(MONGODB_URI)
-    return client["pdf_embeddings_dbADR"]["pdf_vectors"]
-
-client_genai = get_genai_client()
-collection = get_mongo_collection()
-
-# =======================
-# SUPABASE (POSTGRES)
-# =======================
-
-def get_pg_connection():
+# Supabase (Postgres)
+def get_conn():
     return psycopg2.connect(**SUPABASE_CONFIG)
 
+# MongoDB
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client["rag_restaurante"]
+collection = mongo_db["bebidas"]
+
+# Gemini
+client_genai = genai.Client(api_key=GOOGLE_API_KEY)
+
+# ==============================
+# ESTADO
+# ==============================
+
+if "pedido" not in st.session_state:
+    st.session_state.pedido = None
+
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+
+# ==============================
+# FUNCIONES
+# ==============================
+
+def detectar_bebida(mensaje):
+    """Detecta bebida básica desde texto"""
+    mensaje = mensaje.lower()
+
+    catalogo = [
+        {"nombre": "IPA Verde", "tipo": "cerveza", "precio": 17},
+        {"nombre": "Vino Tinto Reserva", "tipo": "vino", "precio": 25},
+        {"nombre": "Whisky 12 años", "tipo": "whisky", "precio": 35},
+        {"nombre": "Mojito", "tipo": "coctel", "precio": 22}
+    ]
+
+    for bebida in catalogo:
+        if bebida["nombre"].lower() in mensaje:
+            cantidad = 1
+            match = re.search(r"\d+", mensaje)
+            if match:
+                cantidad = int(match.group())
+
+            return {
+                "nombre": bebida["nombre"],
+                "tipo": bebida["tipo"],
+                "precio": bebida["precio"],
+                "cantidad": cantidad
+            }
+
+    return None
+
+
+def generar_respuesta_natural(user_msg, estado_pedido):
+    prompt = f"""
+Eres un asistente de restaurante amigable.
+
+Estado del pedido:
+{estado_pedido}
+
+Usuario: {user_msg}
+
+Responde de forma natural, breve y útil.
+"""
+
+    try:
+        response = client_genai.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return response.text
+    except:
+        return "Estoy teniendo problemas para responder ahora 😅"
+
+
 def guardar_pedido(pedido):
-    conn = get_pg_connection()
+    conn = get_conn()
     cur = conn.cursor()
 
     for item in pedido["items"]:
         cur.execute("""
-            INSERT INTO restaurant.alcohol_orders
-            (customer_name, drink_name, drink_type, quantity, unit_price, order_status, is_verified_age, notes)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        INSERT INTO restaurant.alcohol_orders
+        (customer_name, drink_name, drink_type, quantity, unit_price, order_status, is_verified_age, notes)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             pedido["cliente"],
             item["nombre"],
@@ -66,155 +135,88 @@ def guardar_pedido(pedido):
     cur.close()
     conn.close()
 
-# =======================
-# IA + EMBEDDINGS
-# =======================
+# ==============================
+# BOTONES UX
+# ==============================
 
-def crear_embedding(texto):
-    response = client_genai.models.embed_content(
-        model="gemini-embedding-001",
-        contents=texto,
-        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
-    )
-    return response.embeddings[0].values
+col1, col2, col3 = st.columns(3)
 
-def buscar_similares(embedding, k=3):
-    pipeline = [
-        {
-            "$vectorSearch": {
-                "index": "vector_index",
-                "path": "embedding",
-                "queryVector": embedding,
-                "numCandidates": 50,
-                "limit": k,
-            }
-        }
-    ]
-    return list(collection.aggregate(pipeline))
-
-def interpretar_pedido(user_msg, contextos):
-    contexto = "\n".join([c["texto"] for c in contextos])
-
-    prompt = f"""
-Eres un asistente de restaurante.
-
-MENÚ:
-{contexto}
-
-Extrae si el usuario quiere pedir una bebida.
-Responde SOLO en JSON:
-
-{{
-"accion": "agregar" o "ninguno",
-"nombre": "",
-"tipo": "",
-"precio": 0,
-"cantidad": 1
-}}
-
-Usuario: {user_msg}
-"""
-
-    response = client_genai.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-    )
-
-    try:
-        import json
-        return json.loads(response.text)
-    except:
-        return {"accion": "ninguno"}
-
-# =======================
-# UI
-# =======================
-
-st.set_page_config(page_title="Bot Restaurante IA", page_icon="🍹")
-st.title("🍹 Restaurante Inteligente")
-
-# Estado
-if "pedido" not in st.session_state:
-    st.session_state.pedido = None
-
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-
-# Mostrar chat
-for msg in st.session_state.chat:
-    st.chat_message(msg["rol"]).write(msg["texto"])
-
-msg = st.chat_input("Escribe...")
-
-if msg:
-    st.chat_message("user").write(msg)
-    st.session_state.chat.append({"rol": "user", "texto": msg})
-
-    respuesta = ""
-
-    # =======================
-    # FLUJO DEL NEGOCIO
-    # =======================
-
-    if "iniciar pedido" in msg.lower():
+with col1:
+    if st.button("🟢 Iniciar pedido"):
         st.session_state.pedido = {
             "cliente": "Cliente Demo",
             "items": [],
             "edad_verificada": False,
             "notes": ""
         }
-        respuesta = "✅ Pedido iniciado. ¿Qué bebida deseas?"
 
-    elif st.session_state.pedido is None:
-        respuesta = "⚠️ Primero escribe: 'iniciar pedido'"
+with col2:
+    if st.button("🔞 Soy mayor de edad"):
+        if st.session_state.pedido:
+            st.session_state.pedido["edad_verificada"] = True
+            st.success("Edad verificada ✅")
 
-    elif "soy mayor" in msg.lower():
-        st.session_state.pedido["edad_verificada"] = True
-        respuesta = "✅ Edad verificada"
-
-    elif "finalizar" in msg.lower():
-        if not st.session_state.pedido["items"]:
-            respuesta = "❌ No hay productos en el pedido"
-        elif not st.session_state.pedido["edad_verificada"]:
-            respuesta = "⚠️ Debes confirmar que eres mayor de edad"
-        else:
+with col3:
+    if st.button("✅ Finalizar pedido"):
+        if st.session_state.pedido:
             guardar_pedido(st.session_state.pedido)
-            respuesta = "🎉 Pedido guardado en Supabase"
+            st.success("Pedido guardado 🎉")
             st.session_state.pedido = None
 
+# ==============================
+# CHAT
+# ==============================
+
+for msg in st.session_state.chat:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+user_input = st.chat_input("Escribe tu pedido...")
+
+if user_input:
+    st.session_state.chat.append({"role": "user", "content": user_input})
+
+    if not st.session_state.pedido:
+        respuesta = "Primero inicia un pedido con el botón 🟢"
     else:
-        emb = crear_embedding(msg)
-        similares = buscar_similares(emb)
+        data = detectar_bebida(user_input)
 
-        data = interpretar_pedido(msg, similares)
-
-        if data["accion"] == "agregar":
-            st.session_state.pedido["items"].append({
-                "nombre": data["nombre"],
-                "tipo": data["tipo"],
-                "precio": data["precio"],
-                "cantidad": data["cantidad"]
-            })
-
-            respuesta = f"🍺 Agregado: {data['nombre']} x{data['cantidad']}"
+        if data:
+            if not st.session_state.pedido["edad_verificada"]:
+                respuesta = "⚠️ Debes confirmar que eres mayor de edad"
+            else:
+                st.session_state.pedido["items"].append(data)
+                respuesta = generar_respuesta_natural(user_input, st.session_state.pedido)
         else:
-            respuesta = "🤖 Puedo ayudarte a elegir bebidas o tomar tu pedido."
+            respuesta = generar_respuesta_natural(user_input, st.session_state.pedido)
 
-    st.chat_message("assistant").write(respuesta)
-    st.session_state.chat.append({"rol": "assistant", "texto": respuesta})
+    st.session_state.chat.append({"role": "assistant", "content": respuesta})
 
-# =======================
-# SIDEBAR PEDIDO
-# =======================
+    with st.chat_message("assistant"):
+        st.markdown(respuesta)
+
+# ==============================
+# MOSTRAR PEDIDO
+# ==============================
 
 if st.session_state.pedido:
-    st.sidebar.title("🧾 Pedido actual")
+    st.markdown("## 🧾 Tu pedido")
 
     total = 0
     for item in st.session_state.pedido["items"]:
         subtotal = item["precio"] * item["cantidad"]
         total += subtotal
-        st.sidebar.write(f"{item['nombre']} x{item['cantidad']} - S/{subtotal}")
 
-    st.sidebar.write("---")
-    st.sidebar.write(f"Total: S/{total}")
+        st.markdown(f"""
+**{item['nombre']}**  
+Cantidad: {item['cantidad']}  
+Subtotal: S/{subtotal:.2f}
+---
+""")
+
+    servicio = total * 0.10
+    total_final = total + servicio
+
+    st.markdown(f"💰 Subtotal: S/{total:.2f}")
+    st.markdown(f"🧾 Servicio (10%): S/{servicio:.2f}")
+    st.markdown(f"## Total: S/{total_final:.2f}")
