@@ -1,46 +1,56 @@
 import streamlit as st
-import os
 import pymongo
 import psycopg2
 from google import genai
+from google.genai import types
 
-# =========================
-# CONFIG
-# =========================
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-MONGODB_URI = os.getenv("MONGODB_URI")
-SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")  # cadena postgres
+# =======================
+# CONFIG (IGUAL QUE TU NOTEBOOK)
+# =======================
+GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+MONGODB_URI = st.secrets["MONGODB_URI"]
+SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
 
-# =========================
+if not GOOGLE_API_KEY or not MONGODB_URI:
+    st.error("Faltan credenciales")
+    st.stop()
+
+# =======================
 # CLIENTES
-# =========================
+# =======================
 client_genai = genai.Client(api_key=GOOGLE_API_KEY)
 
-mongo_client = pymongo.MongoClient(MONGODB_URI)
-mongo_db = mongo_client["pdf_embeddings_dbADR"]
-collection = mongo_db["pdf_vectors"]
+client_mongo = pymongo.MongoClient(MONGODB_URI)
+db = client_mongo.pdf_embeddings_db
+collection = db.pdf_vectors
 
 pg_conn = psycopg2.connect(SUPABASE_DB_URL)
 pg_conn.autocommit = True
 
-# =========================
-# FUNCIONES IA
-# =========================
-def crear_embedding(texto):
+# =======================
+# EMBEDDING (MISMA LÓGICA)
+# =======================
+def crear_embedding(texto, task_type="RETRIEVAL_QUERY"):
     response = client_genai.models.embed_content(
         model="gemini-embedding-001",
-        contents=texto
+        contents=texto,
+        config=types.EmbedContentConfig(
+            task_type=task_type,
+        ),
     )
     return response.embeddings[0].values
 
 
+# =======================
+# BÚSQUEDA VECTORIAL
+# =======================
 def buscar_contexto(pregunta):
-    query_embedding = crear_embedding(pregunta)
+    emb = crear_embedding(pregunta)
 
     resultados = collection.aggregate([
         {
             "$vectorSearch": {
-                "queryVector": query_embedding,
+                "queryVector": emb,
                 "path": "embedding",
                 "numCandidates": 100,
                 "limit": 3,
@@ -53,6 +63,9 @@ def buscar_contexto(pregunta):
     return "\n".join(textos)
 
 
+# =======================
+# RESPUESTA IA
+# =======================
 def responder(pregunta):
     contexto = buscar_contexto(pregunta)
 
@@ -65,7 +78,7 @@ def responder(pregunta):
     USUARIO:
     {pregunta}
 
-    Responde de forma clara y amigable.
+    Responde claro y amigable.
     """
 
     response = client_genai.models.generate_content(
@@ -76,65 +89,48 @@ def responder(pregunta):
     return response.text
 
 
-# =========================
-# DETECCIÓN DE PEDIDOS
-# =========================
+# =======================
+# PEDIDOS
+# =======================
 def es_pedido(texto):
-    palabras = ["quiero", "pedido", "orden", "dame", "comprar"]
-    return any(p in texto.lower() for p in palabras)
+    return any(p in texto.lower() for p in ["quiero", "pedido", "dame", "orden"])
 
 
-def guardar_pedido(nombre, bebida, cantidad):
+def guardar_pedido():
     cursor = pg_conn.cursor()
-
-    query = """
-    INSERT INTO restaurant.alcohol_orders 
-    (customer_name, drink_name, quantity, unit_price, is_verified_age)
-    VALUES (%s, %s, %s, %s, %s)
-    """
-
-    # precio fijo demo
-    precio = 20.00
-
-    cursor.execute(query, (nombre, bebida, cantidad, precio, True))
+    cursor.execute("""
+        INSERT INTO restaurant.alcohol_orders
+        (customer_name, drink_name, quantity, unit_price, is_verified_age)
+        VALUES (%s, %s, %s, %s, %s)
+    """, ("Cliente Demo", "Cerveza", 1, 20.0, True))
     cursor.close()
 
 
-# =========================
-# UI STREAMLIT
-# =========================
-st.set_page_config(page_title="🍹 Chatbot Restaurante", layout="centered")
-
-st.title("🍹 Chatbot de Bebidas")
+# =======================
+# UI
+# =======================
+st.title("🍹 Chatbot Restaurante")
 
 if "chat" not in st.session_state:
     st.session_state.chat = []
 
-# Mostrar historial
 for msg in st.session_state.chat:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# Input usuario
 user_input = st.chat_input("Escribe tu mensaje...")
 
 if user_input:
-    # Mostrar usuario
     st.session_state.chat.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
-    # Detectar pedido
     if es_pedido(user_input):
-        try:
-            guardar_pedido("Cliente Demo", "Cerveza", 1)
-            respuesta = "✅ Pedido registrado correctamente 🍺"
-        except Exception as e:
-            respuesta = f"❌ Error al guardar pedido: {e}"
+        guardar_pedido()
+        respuesta = "✅ Pedido registrado 🍺"
     else:
         respuesta = responder(user_input)
 
-    # Mostrar respuesta
     st.session_state.chat.append({"role": "assistant", "content": respuesta})
     with st.chat_message("assistant"):
         st.write(respuesta)
