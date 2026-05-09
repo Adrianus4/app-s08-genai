@@ -1,5 +1,6 @@
 import streamlit as st
 import pymongo
+import psycopg2
 from google import genai
 from google.genai import types
 
@@ -8,31 +9,102 @@ from google.genai import types
 # =======================
 
 GOOGLE_API_KEY = "TU_API_KEY"
+
 MONGODB_URI = "TU_MONGO_URI"
 
-client_genai = genai.Client(api_key=GOOGLE_API_KEY)
-client_mongo = pymongo.MongoClient(MONGODB_URI)
+SUPABASE_CONFIG = {
+    "host": "db.lbytbevfclnpefshnxrw.supabase.co",
+    "dbname": "postgres",
+    "user": "postgres",
+    "password": "TU_PASSWORD",
+    "port": 5432,
+    "sslmode": "require"
+}
 
+# =======================
+# CLIENTES
+# =======================
+
+client_genai = genai.Client(api_key=GOOGLE_API_KEY)
+
+client_mongo = pymongo.MongoClient(MONGODB_URI)
 db = client_mongo.pdf_embeddings_dbADR
 collection = db.pdf_vectors
 
 # =======================
-# EMBEDDING
+# POSTGRES
 # =======================
 
-def crear_embedding(texto, tipo="RETRIEVAL_QUERY"):
+def get_conn():
+    try:
+        return psycopg2.connect(**SUPABASE_CONFIG)
+    except Exception as e:
+        print(e)
+        return None
+
+def guardar_pedido_db(items):
+    conn = get_conn()
+    if not conn:
+        st.error("Error conectando a Supabase")
+        return
+
+    cur = conn.cursor()
+
+    for item in items:
+        cur.execute("""
+        INSERT INTO restaurant.alcohol_orders
+        (customer_name, drink_name, drink_type, quantity, unit_price, is_verified_age)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        """, (
+            "Cliente Web",
+            item["nombre"],
+            item.get("tipo", "general"),
+            1,
+            item["precio"],
+            True
+        ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def obtener_pedidos():
+    conn = get_conn()
+    if not conn:
+        return []
+
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT drink_name, quantity, total_price, created_at
+    FROM restaurant.alcohol_orders
+    ORDER BY created_at DESC
+    LIMIT 20
+    """)
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+# =======================
+# EMBEDDINGS
+# =======================
+
+def crear_embedding(texto):
     try:
         response = client_genai.models.embed_content(
             model="gemini-embedding-001",
             contents=texto,
-            config=types.EmbedContentConfig(task_type=tipo),
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_QUERY"
+            ),
         )
         return response.embeddings[0].values
     except:
         return None
 
 # =======================
-# BUSCAR CONTEXTO (RAG)
+# RAG MONGO
 # =======================
 
 def buscar_contexto(pregunta):
@@ -73,7 +145,7 @@ Eres un sommelier experto.
 Funciones:
 - Recomendar bebidas
 - Responder dudas
-- Sugerir opciones
+- Ser claro y breve
 
 Usa SOLO el contexto.
 
@@ -91,7 +163,7 @@ USUARIO:
         )
         return r.text
     except:
-        return "Error en IA"
+        return "Error IA"
 
 # =======================
 # UI
@@ -100,7 +172,7 @@ USUARIO:
 st.set_page_config(layout="wide")
 st.title("🍷 Verde & Vital")
 
-# 🎨 estilo minimalista
+# 🎨 estilo
 st.markdown("""
 <style>
 .card {
@@ -110,21 +182,18 @@ st.markdown("""
     color:white;
     text-align:center;
 }
-.sidebar {
-    background:#0f172a;
-}
 </style>
 """, unsafe_allow_html=True)
 
 # =======================
-# MENÚ BASE
+# MENÚ
 # =======================
 
 menu = [
-    {"nombre": "IPA Verde", "precio": 17},
-    {"nombre": "Vino Tinto", "precio": 25},
-    {"nombre": "Whisky 12 años", "precio": 35},
-    {"nombre": "Mojito", "precio": 22},
+    {"nombre": "IPA Verde", "precio": 17, "tipo": "cerveza"},
+    {"nombre": "Vino Tinto", "precio": 25, "tipo": "vino"},
+    {"nombre": "Whisky 12 años", "precio": 35, "tipo": "whisky"},
+    {"nombre": "Mojito", "precio": 22, "tipo": "cocktail"},
 ]
 
 # =======================
@@ -138,20 +207,21 @@ if "chat" not in st.session_state:
     st.session_state.chat = []
 
 # =======================
-# SIDEBAR PEDIDOS
+# SIDEBAR
 # =======================
 
-st.sidebar.title("🧾 Tus pedidos")
+st.sidebar.title("🧾 Tu pedido")
 
 total = 0
 for p in st.session_state.pedido:
     total += p["precio"]
     st.sidebar.write(f"{p['nombre']} - S/{p['precio']}")
 
-st.sidebar.write("---")
 st.sidebar.write(f"**Total: S/{total}**")
 
-if st.sidebar.button("🧹 Limpiar pedido"):
+if st.sidebar.button("✅ Guardar pedido"):
+    guardar_pedido_db(st.session_state.pedido)
+    st.sidebar.success("Pedido guardado en Supabase 🎉")
     st.session_state.pedido = []
 
 # =======================
@@ -173,23 +243,27 @@ for i, item in enumerate(menu):
 
         if st.button("Agregar", key=i):
             st.session_state.pedido.append(item)
-            st.success("Agregado")
 
 # =======================
-# DASHBOARD SIMPLE
+# HISTORIAL (DB REAL)
 # =======================
 
 st.divider()
-st.subheader("📊 Resumen de pedido")
+st.subheader("📊 Pedidos recientes")
 
-if st.session_state.pedido:
-    nombres = [p["nombre"] for p in st.session_state.pedido]
+pedidos = obtener_pedidos()
+
+if pedidos:
+    nombres = [p[0] for p in pedidos]
 
     conteo = {}
     for n in nombres:
         conteo[n] = conteo.get(n, 0) + 1
 
     st.bar_chart(conteo)
+
+    for p in pedidos:
+        st.write(f"{p[0]} | Cantidad: {p[1]} | S/{p[2]}")
 else:
     st.info("Sin pedidos aún")
 
@@ -203,7 +277,7 @@ st.subheader("💬 Sommelier IA")
 for m in st.session_state.chat:
     st.chat_message(m["rol"]).write(m["texto"])
 
-msg = st.chat_input("Pregunta sobre bebidas...")
+msg = st.chat_input("Ej: ¿qué vino recomiendas?")
 
 if msg:
     st.chat_message("user").write(msg)
