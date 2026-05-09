@@ -194,4 +194,4 @@ if msg:
     respuesta = responder_chat(msg)
 
     st.chat_message("assistant").write(respuesta)
-    st.session_state.chat.append({"rol": "assistant", "texto": respuesta})s
+    st.session_state.chat.append({"rol": "assistant", "texto": respuesta})
