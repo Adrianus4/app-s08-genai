@@ -1,4 +1,5 @@
-%%writefile app.py
+
+
 import streamlit as st
 import pymongo
 from google import genai
